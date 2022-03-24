@@ -4,6 +4,7 @@ using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Profiling;
 using UnityEngine.Rendering;
 using Random = UnityEngine.Random;
 
@@ -12,11 +13,19 @@ public class DrawCubes : MonoBehaviour
     public int instanceCount;
     public Material mat;
     public Mesh mesh;
+    public ComputeShader hizComputeShader;
     public ComputeShader computeShader;
-    private List<Matrix4x4> localToWorldMatrixs;
+    public CullingType cullingType = CullingType.jobsFrustumCulling;
+    [HideInInspector]
+    public List<Matrix4x4> localToWorldMatrixs;
+    [HideInInspector]
+    public Camera Camera;
 
+    public static DrawCubes instance;
     void Awake()
     {
+        instance = this;
+        Camera = Camera.main;
         localToWorldMatrixs = new List<Matrix4x4>();
         //周围一圈随机生成
         for (int i = 0; i < instanceCount; i++)
@@ -30,7 +39,48 @@ public class DrawCubes : MonoBehaviour
         }
     }
 
+    void OnEnable()
+    {
+        if (cullingType == CullingType.jobsFrustumCulling)
+        {
+            InitArray();
+        }
+        else if (cullingType == CullingType.ComputeFrustumCulling)
+        {
+            InitComputeData();
+        }
+    }
 
+    // Update is called once per frame
+    void Update()
+    {
+        if (cullingType == CullingType.jobsFrustumCulling)
+        {
+            CreateJobs();
+        }
+        else if(cullingType == CullingType.ComputeFrustumCulling)
+        {
+            UpdateCompute();
+        }
+
+    }
+
+    void LateUpdate()
+    {
+        if (cullingType == CullingType.jobsFrustumCulling)
+        {
+            CompleteJobs();
+            Graphics.DrawMeshInstancedIndirect(mesh, 0, mat,
+                new Bounds(Vector3.zero, new Vector3(100.0f, 100.0f, 100.0f)), argsBuffer);
+        }
+    }
+    void OnDisable()
+    {
+        argsBuffer?.Dispose();
+        cullResult?.Dispose();
+        FrustumCulling.Dispose();
+    }
+    
     #region 实例化
 
     void CreateInstance()
@@ -63,10 +113,11 @@ public class DrawCubes : MonoBehaviour
     private NativeList<int> Indices;
     private JobHandle jobHandle;
     ComputeBuffer cullResult;
-    uint[] args = new uint[5] { 0, 0, 0, 0, 0 };
+    uint[] args = new uint[5] {0, 0, 0, 0, 0};
     ComputeBuffer argsBuffer;
     private List<float4x4> cullLocalToWorldMatrixs;
     private bool isCompleted = true;
+
     void InitArray()
     {
         Positions = new NativeArray<float3>(localToWorldMatrixs.Count, Allocator.Persistent);
@@ -75,15 +126,15 @@ public class DrawCubes : MonoBehaviour
             var matrix = localToWorldMatrixs[i];
             Positions[i] = new float3(matrix.m03, matrix.m13, matrix.m23);
         }
-        
-        
+
+
         cullLocalToWorldMatrixs = new List<float4x4>();
         argsBuffer = new ComputeBuffer(1, args.Length * sizeof(uint), ComputeBufferType.IndirectArguments);
     }
 
     void CreateJobs()
     {
-        if (!isCompleted) return;
+        // if (!isCompleted) return;
         FrustumCulling.SetFrustumArray(Camera.main.cullingMatrix);
         Indices = new NativeList<int>(Allocator.TempJob);
         jobHandle = FrustumCulling.ScheduleCullingJob(Positions, Indices);
@@ -92,19 +143,22 @@ public class DrawCubes : MonoBehaviour
 
     void CompleteJobs()
     {
-        if (!jobHandle.IsCompleted) return;
-        isCompleted = true;
+        // if (!jobHandle.IsCompleted) return;
+        // isCompleted = true;
         jobHandle.Complete();
         if (Indices.Length <= 0)
         {
             Indices.Dispose();
             return;
         }
+        Profiler.BeginSample("111");
         cullLocalToWorldMatrixs.Clear();
         for (int i = 0; i < Indices.Length; i++)
         {
             cullLocalToWorldMatrixs.Add(localToWorldMatrixs[Indices[i]]);
         }
+        Profiler.EndSample();
+
         if (null != cullResult)
             cullResult.Release();
         cullResult = new ComputeBuffer(Indices.Length, 4 * 16);
@@ -112,17 +166,18 @@ public class DrawCubes : MonoBehaviour
         mat.SetBuffer("positionBuffer", cullResult);
         if (mesh != null)
         {
-            args[0] = (uint)mesh.GetIndexCount(0);
-            args[1] = (uint)Indices.Length;
-            args[2] = (uint)mesh.GetIndexStart(0);
-            args[3] = (uint)mesh.GetBaseVertex(0);
+            args[0] = (uint) mesh.GetIndexCount(0);
+            args[1] = (uint) Indices.Length;
+            args[2] = (uint) mesh.GetIndexStart(0);
+            args[3] = (uint) mesh.GetBaseVertex(0);
         }
         else
         {
             args[0] = args[1] = args[2] = args[3] = 0;
         }
+
         argsBuffer.SetData(args);
-        
+
         Indices.Dispose();
     }
 
@@ -133,6 +188,7 @@ public class DrawCubes : MonoBehaviour
     private int kernelId;
     private ComputeBuffer localToWorldMatrixBuffer;
     private Vector4[] planes = new Vector4[6];
+
     void InitComputeData()
     {
         kernelId = computeShader.FindKernel("CSMain");
@@ -142,9 +198,9 @@ public class DrawCubes : MonoBehaviour
         localToWorldMatrixBuffer = new ComputeBuffer(localToWorldMatrixs.Count, sizeof(float) * 16);
         localToWorldMatrixBuffer.SetData(localToWorldMatrixs);
         computeShader.SetInt("instanceCount", instanceCount);
-        args[0] = (uint)mesh.GetIndexCount(0);
-        args[2] = (uint)mesh.GetIndexStart(0);
-        args[3] = (uint)mesh.GetBaseVertex(0);
+        args[0] = (uint) mesh.GetIndexCount(0);
+        args[2] = (uint) mesh.GetIndexStart(0);
+        args[3] = (uint) mesh.GetBaseVertex(0);
         argsBuffer = new ComputeBuffer(1, args.Length * sizeof(uint), ComputeBufferType.IndirectArguments);
     }
 
@@ -156,55 +212,33 @@ public class DrawCubes : MonoBehaviour
         {
             planes[i] = new Vector4(_planes[i].normal.x, _planes[i].normal.y, _planes[i].normal.z, _planes[i].distance);
         }
+        computeShader.SetTextureFromGlobal(kernelId, "compu", "_HIZDepth");
         computeShader.SetVectorArray("Planes", planes);
         computeShader.SetBuffer(kernelId, "localToWorldMatrixs", localToWorldMatrixBuffer);
         cullResult.SetCounterValue(0);
         computeShader.SetBuffer(kernelId, "positionBuffer", cullResult);
         computeShader.Dispatch(kernelId, instanceCount / 640 + 1, 1, 1);
 
-        uint[] countBufferData = new uint[1] { 0 };
+        uint[] countBufferData = new uint[1] {0};
         var countBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.IndirectArguments);
         ComputeBuffer.CopyCount(cullResult, countBuffer, 0);
         countBuffer.GetData(countBufferData);
 
         mat.SetBuffer("positionBuffer", cullResult);
         args[1] = countBufferData[0];
-        Debug.Log(args[1]);
         argsBuffer.SetData(args);
+        Graphics.DrawMeshInstancedIndirect(mesh, 0, mat,
+            new Bounds(Vector3.zero, new Vector3(100.0f, 100.0f, 100.0f)), argsBuffer);
     }
 
     #endregion
-    void OnEnable()
-    {
-        //ClearInstance();
-        //CreateInstance();
-        //InitArray();
-        InitComputeData();
-    }
 
-    void OnDisable()
-    {
-        argsBuffer?.Dispose();
-        cullResult?.Dispose();
-        FrustumCulling.Dispose();
-    }
 
-    // Start is called before the first frame update
-    void Start()
-    {
-        
-    }
 
-    // Update is called once per frame
-    void Update()
+    public enum CullingType
     {
-        //CreateJobs();
-        UpdateCompute();
-        Graphics.DrawMeshInstancedIndirect(mesh, 0, mat, new Bounds(Vector3.zero, new Vector3(100.0f, 100.0f, 100.0f)), argsBuffer);
-    }
-
-    void LateUpdate()
-    {
-        //CompleteJobs();
+        jobsFrustumCulling,
+        ComputeFrustumCulling,
+        ComputeHIZCulling,
     }
 }
