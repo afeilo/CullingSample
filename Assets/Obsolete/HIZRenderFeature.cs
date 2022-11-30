@@ -70,6 +70,11 @@ public class HIZRenderFeature : ScriptableRendererFeature
             this.mat = mat;
             this.mesh = mesh;
             this.computeShader = computeShader;
+            if(SystemInfo.usesReversedZBuffer){
+                computeShader.EnableKeyword("_REVERSED_Z");
+            }else{
+                computeShader.DisableKeyword("_REVERSED_Z");
+            }
             this.instanceCount = localToWorldMatrixs.Count;
             kernelId = computeShader.FindKernel("CSMain");
             cullResult?.Release();
@@ -90,7 +95,7 @@ public class HIZRenderFeature : ScriptableRendererFeature
         /// </summary>
         public HIZRenderPass()
         {
-            renderPassEvent = RenderPassEvent.AfterRenderingOpaques;
+            renderPassEvent = RenderPassEvent.BeforeRenderingTransparents;
         }
 
         /// <inheritdoc/>
@@ -124,7 +129,7 @@ public class HIZRenderFeature : ScriptableRendererFeature
                 cmd.SetComputeFloatParams(computeShader, "matrix_VP", mlist);
                 cmd.SetComputeIntParam(computeShader, "instanceCount", instanceCount);
                 cmd.SetComputeVectorArrayParam(computeShader,"Planes", planes);
-                cmd.SetComputeTextureParam(computeShader, kernelId, "_HIZDepth", Shader.PropertyToID("_HIZDepth"));
+                // cmd.SetComputeTextureParam(computeShader, kernelId, "_HIZDepth", Shader.PropertyToID("_HIZDepth"));
                 cmd.SetComputeBufferParam(computeShader, kernelId,"localToWorldMatrixs", localToWorldMatrixBuffer);
                 cullResult.SetCounterValue(0);
                 cmd.SetComputeBufferParam(computeShader, kernelId,"positionBuffer", cullResult);

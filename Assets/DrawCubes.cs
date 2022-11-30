@@ -16,12 +16,11 @@ public class DrawCubes : MonoBehaviour
     public ComputeShader hizComputeShader;
     public ComputeShader computeShader;
     public CullingType cullingType = CullingType.jobsFrustumCulling;
-    [HideInInspector]
-    public List<Matrix4x4> localToWorldMatrixs;
-    [HideInInspector]
-    public Camera Camera;
+    [HideInInspector] public List<Matrix4x4> localToWorldMatrixs;
+    [HideInInspector] public Camera Camera;
 
     public static DrawCubes instance;
+
     void Awake()
     {
         instance = this;
@@ -41,28 +40,35 @@ public class DrawCubes : MonoBehaviour
 
     void OnEnable()
     {
-        if (cullingType == CullingType.jobsFrustumCulling)
+        switch (cullingType)
         {
-            InitArray();
-        }
-        else if (cullingType == CullingType.ComputeFrustumCulling)
-        {
-            InitComputeData();
+            case CullingType.jobsFrustumCulling:
+                InitArray();
+                break;
+            case CullingType.ComputeFrustumCulling:
+                InitComputeData();
+                break;
+            case CullingType.ComputeHIZCulling:
+                InitHizCompute();
+                break;
         }
     }
 
     // Update is called once per frame
     void Update()
     {
-        if (cullingType == CullingType.jobsFrustumCulling)
+        switch (cullingType)
         {
-            CreateJobs();
+            case CullingType.jobsFrustumCulling:
+                CreateJobs();
+                break;
+            case CullingType.ComputeFrustumCulling:
+                UpdateComputeFrustumCulling();
+                break;
+            case CullingType.ComputeHIZCulling:
+                UpdateComputeHIZCulling();
+                break;
         }
-        else if(cullingType == CullingType.ComputeFrustumCulling)
-        {
-            UpdateCompute();
-        }
-
     }
 
     void LateUpdate()
@@ -74,13 +80,14 @@ public class DrawCubes : MonoBehaviour
                 new Bounds(Vector3.zero, new Vector3(100.0f, 100.0f, 100.0f)), argsBuffer);
         }
     }
+
     void OnDisable()
     {
         argsBuffer?.Dispose();
         cullResult?.Dispose();
         FrustumCulling.Dispose();
     }
-    
+
     #region 实例化
 
     void CreateInstance()
@@ -151,12 +158,14 @@ public class DrawCubes : MonoBehaviour
             Indices.Dispose();
             return;
         }
+
         Profiler.BeginSample("111");
         cullLocalToWorldMatrixs.Clear();
         for (int i = 0; i < Indices.Length; i++)
         {
             cullLocalToWorldMatrixs.Add(localToWorldMatrixs[Indices[i]]);
         }
+
         Profiler.EndSample();
 
         if (null != cullResult)
@@ -183,10 +192,11 @@ public class DrawCubes : MonoBehaviour
 
     #endregion
 
-    #region ComputeShader
-
     private int kernelId;
     private ComputeBuffer localToWorldMatrixBuffer;
+
+    #region ComputeShader
+
     private Vector4[] planes = new Vector4[6];
 
     void InitComputeData()
@@ -204,7 +214,7 @@ public class DrawCubes : MonoBehaviour
         argsBuffer = new ComputeBuffer(1, args.Length * sizeof(uint), ComputeBufferType.IndirectArguments);
     }
 
-    void UpdateCompute()
+    void UpdateComputeFrustumCulling()
     {
         Plane[] _planes = new Plane[6];
         GeometryUtility.CalculateFrustumPlanes(Camera.main.cullingMatrix, _planes);
@@ -212,10 +222,10 @@ public class DrawCubes : MonoBehaviour
         {
             planes[i] = new Vector4(_planes[i].normal.x, _planes[i].normal.y, _planes[i].normal.z, _planes[i].distance);
         }
-        computeShader.SetTextureFromGlobal(kernelId, "compu", "_HIZDepth");
+
+        cullResult.SetCounterValue(0);
         computeShader.SetVectorArray("Planes", planes);
         computeShader.SetBuffer(kernelId, "localToWorldMatrixs", localToWorldMatrixBuffer);
-        cullResult.SetCounterValue(0);
         computeShader.SetBuffer(kernelId, "positionBuffer", cullResult);
         computeShader.Dispatch(kernelId, instanceCount / 640 + 1, 1, 1);
 
@@ -233,7 +243,68 @@ public class DrawCubes : MonoBehaviour
 
     #endregion
 
+    #region ComputeHIZCulling
 
+    private CommandBuffer cmd;
+
+    void InitHizCompute()
+    {
+        if (SystemInfo.usesReversedZBuffer)
+        {
+            hizComputeShader.EnableKeyword("_REVERSED_Z");
+        }
+        else
+        {
+            hizComputeShader.DisableKeyword("_REVERSED_Z");
+        }
+
+        this.instanceCount = localToWorldMatrixs.Count;
+        kernelId = hizComputeShader.FindKernel("CSMain");
+        cullResult?.Release();
+        cullResult = new ComputeBuffer(localToWorldMatrixs.Count, sizeof(float) * 16, ComputeBufferType.Append);
+        localToWorldMatrixBuffer?.Release();
+        localToWorldMatrixBuffer = new ComputeBuffer(localToWorldMatrixs.Count, sizeof(float) * 16);
+        localToWorldMatrixBuffer.SetData(localToWorldMatrixs);
+        hizComputeShader.SetInt("instanceCount", instanceCount);
+        args[0] = (uint) mesh.GetIndexCount(0);
+        args[1] = 0;
+        args[2] = (uint) mesh.GetIndexStart(0);
+        args[3] = (uint) mesh.GetBaseVertex(0);
+        argsBuffer = new ComputeBuffer(args.Length, sizeof(uint), ComputeBufferType.IndirectArguments);
+    }
+
+    void UpdateComputeHIZCulling()
+    {
+        cmd = CommandBufferPool.Get("HIZRenderPass");
+        var m = GL.GetGPUProjectionMatrix(Camera.projectionMatrix, false) *
+                Camera.worldToCameraMatrix;
+
+        //高版本 可用  computeShader.SetMatrix("matrix_VP", m); 代替 下面数组传入
+        float[] mlist = new float[]
+        {
+            m.m00, m.m10, m.m20, m.m30,
+            m.m01, m.m11, m.m21, m.m31,
+            m.m02, m.m12, m.m22, m.m32,
+            m.m03, m.m13, m.m23, m.m33
+        };
+
+        argsBuffer.SetData(args);
+        cmd.SetComputeFloatParams(hizComputeShader, "matrix_VP", mlist);
+        cmd.SetComputeIntParam(hizComputeShader, "instanceCount", instanceCount);
+        cmd.SetComputeBufferParam(hizComputeShader, kernelId, "localToWorldMatrixs", localToWorldMatrixBuffer);
+        cullResult.SetCounterValue(0);
+        cmd.SetComputeBufferParam(hizComputeShader, kernelId, "positionBuffer", cullResult);
+        cmd.SetComputeBufferParam(hizComputeShader, kernelId, "argsBuffer", argsBuffer);
+        cmd.DispatchCompute(hizComputeShader, kernelId, instanceCount / 640 + 1, 1, 1);
+        Graphics.ExecuteCommandBuffer(cmd);
+        cmd.Clear();
+        CommandBufferPool.Release(cmd);
+        mat.SetBuffer("positionBuffer", cullResult);
+        Graphics.DrawMeshInstancedIndirect(mesh, 0, mat, new Bounds(Vector3.zero, new Vector3(100.0f, 100.0f, 100.0f)),
+            argsBuffer);
+    }
+
+    #endregion
 
     public enum CullingType
     {
