@@ -31,7 +31,7 @@ public class HIZDepthFeature : ScriptableRendererFeature
         private ComputeShader computeShader;
 
 
-        private RenderTextureFormat format = RenderTextureFormat.ARGBHalf;
+        private RenderTextureFormat format = RenderTextureFormat.RHalf;
         
         const string m_ProfilerTag = "Render HizMap";
         ProfilingSampler m_ProfilingSampler = new ProfilingSampler(m_ProfilerTag);
@@ -116,7 +116,8 @@ public class HIZDepthFeature : ScriptableRendererFeature
                 Matrix4x4 projectionMatrix = renderingData.cameraData.GetGPUProjectionMatrix();
                 Matrix4x4 viewMatrix = renderingData.cameraData.GetViewMatrix();
                 cmd.SetGlobalVector(ShaderConstants.HizCameraPosition, camera.transform.position);
-                cmd.SetGlobalMatrix(ShaderConstants.HizCameraMatrixVP, projectionMatrix * viewMatrix);
+                cmd.SetGlobalMatrix(ShaderConstants.HizCameraMatrixVP, GL.GetGPUProjectionMatrix(camera.projectionMatrix, false) *
+                                                                       camera.worldToCameraMatrix);
                 cmd.SetGlobalTexture(ShaderConstants.HizMapTexure, HizMap);
                 cmd.SetGlobalVector(ShaderConstants.HizMapParam, new Vector4(HizMap.width, HizMap.height, HizMap.mipmapCount));
                
