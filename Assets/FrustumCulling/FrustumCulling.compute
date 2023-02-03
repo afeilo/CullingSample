@@ -1,0 +1,24 @@
+﻿// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+uint instanceCount;
+float4 Planes[6];
+StructuredBuffer<float4x4> localToWorldMatrixs;
+AppendStructuredBuffer<float4x4> positionBuffer;
+
+[numthreads(640,1,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= instanceCount)
+		return;
+	float4x4 mat = localToWorldMatrixs[id.x];
+	float3 position = float3(mat._m03, mat._m13, mat._m23);
+	for (int i = 0; i < 6; i++) {
+		float4 plane = Planes[i];
+		if ((dot(position, plane.xyz) + plane.w) < 0)
+			return;
+	}
+	positionBuffer.Append(mat);
+}
